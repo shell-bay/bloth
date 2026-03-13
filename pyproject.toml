@@ -1,0 +1,107 @@
+[build-system]
+requires = [
+    "setuptools>=61.0",
+    "wheel",
+    "pybind11>=2.10.0",
+    "torch>=2.0.0",
+    "ninja",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bloth"
+version = "0.1.0"
+description = "Ultra-Fast CUDA Kernels for LLM Training - Better than Unsloth"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Bloth Team", email = "bloth@example.com"}
+]
+keywords = [
+    "llm", "training", "cuda", "gpu", "optimization",
+    "flash-attention", "lora", "qlora", "transformers",
+    "deep-learning", "machine-learning", "ai"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: C++",
+    "Programming Language :: CUDA",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "torch>=2.0.0",
+    "triton>=2.0.0",
+    "numpy>=1.20.0",
+    "transformers>=4.30.0",
+    "accelerate>=0.20.0",
+    "bitsandbytes>=0.41.0",
+    "peft>=0.4.0",
+    "safetensors>=0.3.0",
+    "tqdm>=4.65.0",
+    "datasets>=2.0.0",
+    "sentencepiece>=0.1.99",
+    "protobuf>=3.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+    "pre-commit>=3.0.0",
+]
+docs = [
+    "sphinx>=6.0.0",
+    "sphinx-rtd-theme>=1.2.0",
+    "sphinx-autodoc-typehints>=1.20.0",
+    "myst-parser>=1.0.0",
+]
+test = [
+    "pytest>=7.0.0",
+    "pytest-benchmark>=4.0.0",
+    "hypothesis>=6.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/blothai/bloth"
+Documentation = "https://bloth.readthedocs.io"
+Repository = "https://github.com/blothai/bloth"
+Issues = "https://github.com/blothai/bloth/issues"
+
+[tool.setuptools]
+packages = ["bloth", "bloth.kernels", "bloth.models"]
+
+[tool.setuptools.package-data]
+bloth = ["*.cu", "*.cuh", "*.h", "*.cpp"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
+include = '\.pyi?$'
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
