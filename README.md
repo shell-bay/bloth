@@ -29,7 +29,7 @@
 ### From Source
 
 ```bash
-git clone https://github.com/blothai/bloth.git
+git clone https://github.com/shell-bay/bloth.git
 cd bloth
 pip install -e .
 ```
