@@ -1,25 +1,37 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires      = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.backends.legacy:build"
 
 [project]
-name = "bloth"
-version = "2.0.0"
-description = "Ultra-Fast CUDA Kernel Library for LLM Training"
-authors = [{name = "shell-bay"}]
-license = {text = "Apache-2.0"}
+name         = "bloth"
+version      = "1.0.0"
+description  = "Ultra-Fast CUDA Kernel Library for LLM Training"
+authors      = [{name = "shell-bay"}]
+license      = {text = "Apache-2.0"}
 requires-python = ">=3.8"
 dependencies = [
     "torch>=2.0.0",
     "triton>=2.1.0",
-    "transformers>=4.36.0",
+    "transformers>=4.46.3",
     "peft>=0.7.0",
+    "trl>=0.11.4",
 ]
+readme = "README.md"
 
 [project.urls]
 Homepage = "https://github.com/shell-bay/bloth"
 Issues   = "https://github.com/shell-bay/bloth/issues"
 
+# ── pytest: FIXED rootdir so tests work from any working directory ─────────
+# This was the bug causing "collected 0 items" or wrong paths in Colab
+[tool.pytest.ini_options]
+testpaths      = ["tests"]
+python_files   = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+# Add repo root to sys.path automatically
+pythonpath     = ["."]
+
 [tool.black]
-line-length = 100
+line-length    = 100
 target-version = ["py38", "py39", "py310", "py311", "py312"]
