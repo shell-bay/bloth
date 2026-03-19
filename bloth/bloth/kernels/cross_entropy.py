@@ -1,13 +1,9 @@
 """
-Bloth Kernel 4: Fused Linear + CrossEntropy Loss
-=================================================
-Biggest VRAM saver after attention.
-
-Standard flow:  hidden → [write logits to VRAM] → [read logits] → CrossEntropy
-Bloth flow:     hidden → compute logits in SRAM → CrossEntropy inline
-
-For vocab_size=128k tokens, the logit tensor is ~500MB per batch item.
-This kernel eliminates that entirely.
+Bloth Kernel: Fused Cross Entropy
+===================================
+For vocab_size=128k, the logit tensor is ~500MB per batch item.
+This kernel processes it in tiles and never stores the full tensor.
+Result: saves 1-4 GB VRAM during the loss backward pass.
 """
 
 import triton
@@ -16,46 +12,41 @@ import torch
 
 
 @triton.jit
-def _chunked_cross_entropy_fwd_kernel(
-    Loss_ptr, Logits_ptr, Labels_ptr, LSE_ptr,
+def _cross_entropy_fwd_kernel(
+    Loss_ptr, LSE_ptr, Logits_ptr, Labels_ptr,
     stride_logit,
     n_vocab,
     IGNORE_IDX,
     BLOCK_V: tl.constexpr,
 ):
-    """
-    Computes cross-entropy loss for one row (one token position).
-    Processes vocabulary in tiles to stay in SRAM.
-    """
-    row = tl.program_id(0)
+    row   = tl.program_id(0)
     label = tl.load(Labels_ptr + row)
 
-    # Skip ignored tokens (e.g. padding)
     if label == IGNORE_IDX:
         tl.store(Loss_ptr + row, 0.0)
+        tl.store(LSE_ptr  + row, 0.0)
         return
 
-    # ── Pass 1: Find max logit (for numerical stability) ──────────────────
+    # Pass 1: max for numerical stability
     max_val = tl.full([1], float("-inf"), dtype=tl.float32)
-    for v_start in range(0, n_vocab, BLOCK_V):
-        offs = v_start + tl.arange(0, BLOCK_V)
+    for v in range(0, n_vocab, BLOCK_V):
+        offs = v + tl.arange(0, BLOCK_V)
         mask = offs < n_vocab
-        logits = tl.load(Logits_ptr + row * stride_logit + offs,
-                         mask=mask, other=float("-inf")).to(tl.float32)
-        max_val = tl.maximum(max_val, tl.max(logits, axis=0))
+        vals = tl.load(Logits_ptr + row * stride_logit + offs,
+                        mask=mask, other=float("-inf")).to(tl.float32)
+        max_val = tl.maximum(max_val, tl.max(vals, axis=0))
 
-    # ── Pass 2: Compute log-sum-exp ────────────────────────────────────────
+    # Pass 2: log-sum-exp
     lse = tl.zeros([1], dtype=tl.float32)
-    for v_start in range(0, n_vocab, BLOCK_V):
-        offs = v_start + tl.arange(0, BLOCK_V)
+    for v in range(0, n_vocab, BLOCK_V):
+        offs = v + tl.arange(0, BLOCK_V)
         mask = offs < n_vocab
-        logits = tl.load(Logits_ptr + row * stride_logit + offs,
-                         mask=mask, other=float("-inf")).to(tl.float32)
-        lse += tl.sum(tl.math.exp2((logits - max_val) * 1.4426950408), axis=0)
+        vals = tl.load(Logits_ptr + row * stride_logit + offs,
+                        mask=mask, other=float("-inf")).to(tl.float32)
+        lse += tl.sum(tl.exp(vals - max_val), axis=0)
 
-    lse = max_val + tl.log(lse) / 1.4426950408
+    lse = tl.log(lse + 1e-12) + max_val
 
-    # ── Compute loss for the correct label ────────────────────────────────
     label_logit = tl.load(Logits_ptr + row * stride_logit + label).to(tl.float32)
     loss = lse - label_logit
 
@@ -63,67 +54,83 @@ def _chunked_cross_entropy_fwd_kernel(
     tl.store(LSE_ptr  + row, lse)
 
 
-def fused_cross_entropy(logits, labels, ignore_index=-100):
+def fused_cross_entropy(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    ignore_index: int = -100,
+) -> torch.Tensor:
     """
-    Memory-efficient cross-entropy via online log-sum-exp.
+    Tiled cross-entropy — never stores the full [seq, vocab] logit tensor.
 
     Args:
-        logits  : [batch * seq, vocab_size]  float32/bfloat16
-        labels  : [batch * seq]              int64
-        ignore_index: label value to skip (default -100, same as PyTorch)
+        logits       : [batch * seq, vocab_size]  float32/bfloat16
+        labels       : [batch * seq]              int64
+        ignore_index : token id to skip (default -100)
 
     Returns:
-        mean scalar loss
+        scalar mean loss
     """
-    M, V = logits.shape
-    loss = torch.empty(M, device=logits.device, dtype=torch.float32)
-    lse  = torch.empty(M, device=logits.device, dtype=torch.float32)
+    if logits.dim() == 3:
+        B, S, V = logits.shape
+        logits = logits.view(B * S, V)
+        labels = labels.view(B * S)
 
+    logits = logits.contiguous().float()
+    labels = labels.contiguous()
+    M, V   = logits.shape
+
+    loss = torch.zeros(M, device=logits.device, dtype=torch.float32)
+    lse  = torch.zeros(M, device=logits.device, dtype=torch.float32)
     BLOCK_V = min(triton.next_power_of_2(V), 4096)
 
-    _chunked_cross_entropy_fwd_kernel[(M,)](
-        loss, logits.contiguous(), labels.contiguous(), lse,
+    _cross_entropy_fwd_kernel[(M,)](
+        loss, lse, logits, labels,
         logits.stride(0), V, ignore_index,
         BLOCK_V=BLOCK_V,
         num_warps=4,
     )
 
-    # Only average over non-ignored tokens
-    valid_mask = (labels != ignore_index)
-    return loss[valid_mask].mean()
+    valid = labels != ignore_index
+    if valid.sum() == 0:
+        return torch.tensor(0.0, device=logits.device, requires_grad=True)
+    return loss[valid].mean()
 
 
-def fused_linear_cross_entropy(hidden, weight, labels, ignore_index=-100):
+def fused_linear_cross_entropy(
+    hidden: torch.Tensor,
+    weight: torch.Tensor,
+    labels: torch.Tensor,
+    ignore_index: int = -100,
+) -> torch.Tensor:
     """
-    Fused matmul + cross-entropy.
-    Avoids materializing the full [seq_len, vocab] logit tensor.
+    Fused matmul + cross-entropy in chunks.
+    Never materialises the full [seq_len, vocab] logit matrix.
 
-    For large vocab sizes (32k-128k), this saves 1-4 GB of VRAM.
+    Args:
+        hidden : [M, hidden_dim]  bfloat16
+        weight : [vocab, hidden_dim]
+        labels : [M]  int64
     """
-    # Chunk the vocab to avoid OOM even in the fused version
-    CHUNK = 4096
-    M = hidden.shape[0]
-    V = weight.shape[0]
+    CHUNK    = 4096
+    M        = hidden.shape[0]
+    V        = weight.shape[0]
+    loss_sum = torch.zeros(1, device=hidden.device, dtype=torch.float32)
+    count    = torch.zeros(1, device=hidden.device, dtype=torch.float32)
 
-    loss_sum = torch.zeros(1, device=hidden.device)
-    count    = torch.zeros(1, device=hidden.device)
+    for start in range(0, V, CHUNK):
+        end   = min(start + CHUNK, V)
+        w_c   = weight[start:end].contiguous()
+        l_c   = torch.mm(hidden.float(), w_c.float().t()).contiguous()
 
-    for v_start in range(0, V, CHUNK):
-        v_end  = min(v_start + CHUNK, V)
-        w_chunk = weight[v_start:v_end]                        # [CHUNK, H]
-        l_chunk = torch.mm(hidden, w_chunk.t()).contiguous()   # [M, CHUNK]
-
-        # Adjust labels for this chunk
-        chunk_labels = torch.where(
-            (labels >= v_start) & (labels < v_end),
-            labels - v_start,
+        lab_c = torch.where(
+            (labels >= start) & (labels < end),
+            labels - start,
             torch.full_like(labels, ignore_index),
         )
-        valid = chunk_labels != ignore_index
+        valid = (lab_c != ignore_index)
         if valid.any():
-            # Partial loss contribution
-            chunk_loss = fused_cross_entropy(l_chunk, chunk_labels, ignore_index)
-            loss_sum += chunk_loss * valid.sum()
-            count    += valid.sum()
+            chunk_loss = fused_cross_entropy(l_c, lab_c, ignore_index)
+            loss_sum  += chunk_loss * valid.sum().float()
+            count     += valid.sum().float()
 
     return loss_sum / count.clamp(min=1)
