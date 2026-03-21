@@ -1,9 +1,8 @@
 """
-Bloth Benchmark Script
-Measures TFLOPS and memory bandwidth to verify kernel quality.
-Per Gemini's requirement: >70% bandwidth utilization = non-gimmick kernel.
+Bloth v1.0 — Kernel Benchmark
+Measures TFLOPS and bandwidth utilisation.
+>70% utilisation = non-gimmick kernel (Gemini's requirement).
 """
-
 import torch
 import bloth
 from bloth.utils.benchmark import benchmark_forward
@@ -12,30 +11,23 @@ from bloth.utils.device    import print_device_info
 print_device_info()
 
 if not torch.cuda.is_available():
-    print("No GPU found. Benchmark requires CUDA.")
+    print("Benchmark requires a CUDA GPU.")
     exit(0)
 
-DEVICE = "cuda"
-DTYPE  = torch.bfloat16
+D = "cuda"
 
-# ── Benchmark 1: RMSNorm ──────────────────────────────────────────────────
-print("\n[1] Benchmarking RMSNorm...")
-weight = torch.ones(4096, device=DEVICE, dtype=DTYPE)
-norm_fn = lambda x: bloth.rms_norm(x.view(-1, 4096), weight)
-benchmark_forward(norm_fn, input_shape=(8, 512, 4096))
+print("\n[1] RMSNorm  (hidden=4096)")
+w = torch.ones(4096, device=D, dtype=torch.bfloat16)
+benchmark_forward(lambda x: bloth.rms_norm(x.view(-1, 4096), w),
+                  input_shape=(8, 512, 4096))
 
-# ── Benchmark 2: GEMM ─────────────────────────────────────────────────────
-print("\n[2] Benchmarking GEMM...")
-B = torch.randn(4096, 4096, device=DEVICE, dtype=DTYPE)
-gemm_fn = lambda x: bloth.gemm(x.view(-1, 4096), B)
-benchmark_forward(gemm_fn, input_shape=(32, 128, 4096))
+print("\n[2] GEMM  (4096x4096)")
+B = torch.randn(4096, 4096, device=D, dtype=torch.bfloat16)
+benchmark_forward(lambda x: bloth.gemm(x.view(-1, 4096), B),
+                  input_shape=(32, 128, 4096))
 
-# ── Benchmark 3: Memory estimation ────────────────────────────────────────
-print("\n[3] Memory estimates for common model sizes:")
-for model in ["7b", "13b", "70b"]:
-    for prec in ["bf16", "int4"]:
-        est = bloth.estimate_memory_usage(model, batch_size=4,
-                                           sequence_length=2048, precision=prec)
-        print(f"  {model} {prec}: ~{est['total_gb']:.0f} GB total VRAM")
-
-print("\n[Bloth] Benchmark complete!")
+print("\n[3] Memory estimates")
+for m in ["7b", "13b", "70b"]:
+    for p in ["bf16", "int4"]:
+        e = bloth.estimate_memory_usage(m, 4, 2048, p)
+        print(f"   {m:4s} {p:5s}: ~{e['total_gb']:5.1f} GB total")
